@@ -374,6 +374,11 @@ func parseDuration(s string) (time.Duration, error) {
 
 // handleHealth returns health check
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	if !s.checkSecret(r) {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
 	s.sessionsMu.RLock()
 	deviceCount := len(s.sessions)
 	s.sessionsMu.RUnlock()
@@ -472,7 +477,7 @@ func main() {
 	log.Printf("   👀 Tail:    ws[s]://HOST/tail/{device}?secret=Z")
 	log.Printf("   📋 Devices: GET /devices?secret=Z")
 	log.Printf("   📄 Logs:    GET /logs/{device}?secret=Z[&since=5m][&regex=X][&format=text]")
-	log.Printf("   ❤️  Health:  GET /health")
+	log.Printf("   ❤️  Health:  GET /health?secret=Z")
 	log.Printf("")
 
 	var wg sync.WaitGroup
