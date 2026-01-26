@@ -1,0 +1,21 @@
+# Binaries (keeping bin/ tracked for releases)
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Certificates (generated)
+debugsocket.crt
+debugsocket.key
+*.pem
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
