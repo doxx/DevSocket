@@ -47,9 +47,47 @@ At least one of `--bind-v4` or `--bind-v6` is required.
 ### iOS Client
 
 1. Copy `swift/DebugSocket.swift` into your project
-2. Update `serverURL` and `sharedSecret`
-3. Call `DebugSocket.shared.connectIfTestFlight()` on launch
-4. Log with `DebugSocket.shared.log(msg)`
+2. Update `serverURL` and `sharedSecret` in the file
+3. Initialize on app launch:
+
+```swift
+// App.swift or AppDelegate
+@main
+struct MyApp: App {
+    init() {
+        // Auto-connect for TestFlight/Debug builds only
+        DebugSocket.shared.connectIfTestFlight()
+        
+        // OR: Connect only if user enabled toggle in settings
+        // DebugSocket.shared.initializeIfEnabled()
+    }
+}
+```
+
+4. Stream your logs:
+
+```swift
+// In your logging function
+func log(_ message: String) {
+    print(message)
+    DebugSocket.shared.log(message)
+}
+```
+
+5. (Optional) Add settings toggle for user control:
+
+```swift
+Toggle("Debug Streaming", isOn: Binding(
+    get: { DebugSocket.isEnabled },
+    set: { DebugSocket.isEnabled = $0 }
+))
+
+// Custom device name for easy identification
+TextField("Device Name", text: Binding(
+    get: { DebugSocket.deviceName },
+    set: { DebugSocket.deviceName = $0 }
+))
+```
 
 ### Android Client
 

@@ -1,43 +1,83 @@
 // SPDX-License-Identifier: MIT
-// Copyright © 2026 doxx.net. All Rights Reserved.
+// DebugSocket - Remote debug log streaming for iOS
+// https://github.com/doxx/DebugSocket
 
 import Foundation
 import UIKit
-import Security
+import CryptoKit
 
-/// Remote debug log streaming for TestFlight builds
-/// Drop this file into your iOS project and call DebugSocket.shared.connectIfTestFlight() on app launch
+/// Remote debug log streaming for TestFlight/development builds
+/// Streams console logs to DebugSocket server for real-time debugging in Cursor or other tools
 public class DebugSocket: NSObject {
     public static let shared = DebugSocket()
 
     private var socket: URLSessionWebSocketTask?
     private var session: URLSession?
-    private let queue = DispatchQueue(label: "com.doxx.debugsocket", qos: .utility)
+    private let queue = DispatchQueue(label: "com.debugsocket.client", qos: .utility)
     private var isConnected = false
     private var shouldReconnect = true
 
-    // MARK: - Configuration (UPDATE THESE)
-    
-    private let serverURL = "wss://debug.doxx.net/stream"  // Your server URL
-    private let sharedSecret = "YOUR_SHARED_SECRET_HERE"   // Must match --secret on server
-    
-    // Certificate pinning (optional)
-    // Set to nil to use standard PKI validation
-    // Set to base64-encoded DER certificate to pin to a specific cert
-    private let pinnedCertificateBase64: String? = nil
-    
-    // Example pinned cert (replace with your own from: make gencert):
-    // private let pinnedCertificateBase64: String? = """
-    // MIIBkTCB+wIJAKHBfpegPfHtMA0GCSqGSIb3DQEBCwUAMBExDzANBgNVBAMMBmRl
-    // YnVnczAeFw0yNjAxMjYwMDAwMDBaFw0zNjAxMjYwMDAwMDBaMBExDzANBgNVBAMM
-    // BmRlYnVnczBcMA0GCSqGSIb3DQEBAQUAA0sAMEgCQQC7o... (truncated)
-    // """
-    
+    // MARK: - Configuration (UPDATE THESE FOR YOUR PROJECT)
+
+    /// Your DebugSocket server URL (wss:// for TLS, ws:// for local dev)
+    private let serverURL = "wss://your-server.com/stream"
+
+    /// Shared secret - must match --secret on server
+    private let sharedSecret = "YOUR_SECRET_HERE"
+
+    /// UserDefaults key for enable/disable toggle
+    private static let enabledKey = "com.debugsocket.enabled"
+
+    /// UserDefaults key for custom device name
+    private static let deviceNameKey = "com.debugsocket.deviceName"
+
+    /// Log handler - set this to receive log calls from your logging system
+    /// Example: DebugSocket.logHandler = { msg in DebugSocket.shared.log(msg) }
+    public static var logHandler: ((String) -> Void)?
+
+    /// Connection status for UI display
+    public var connectionStatus: String {
+        isConnected ? "Connected" : "Disconnected"
+    }
+
     private override init() {
         super.init()
     }
 
     // MARK: - Public API
+
+    /// Check if DebugSocket is enabled (persisted setting)
+    public static var isEnabled: Bool {
+        get { UserDefaults.standard.bool(forKey: enabledKey) }
+        set {
+            UserDefaults.standard.set(newValue, forKey: enabledKey)
+            if newValue {
+                shared.connect()
+            } else {
+                shared.disconnect()
+            }
+        }
+    }
+
+    /// Get/set custom device name for identification
+    public static var deviceName: String {
+        get { UserDefaults.standard.string(forKey: deviceNameKey) ?? "" }
+        set {
+            UserDefaults.standard.set(newValue, forKey: deviceNameKey)
+            // Reconnect to update name on server
+            if isEnabled {
+                shared.disconnect()
+                shared.connect()
+            }
+        }
+    }
+
+    /// Initialize on app launch - connects if previously enabled
+    public func initializeIfEnabled() {
+        if Self.isEnabled {
+            connect()
+        }
+    }
 
     /// Call this on app launch - only connects for TestFlight/Debug builds
     public func connectIfTestFlight() {
@@ -61,9 +101,10 @@ public class DebugSocket: NSObject {
     /// Stop streaming and disconnect
     public func disconnect() {
         shouldReconnect = false
+        isConnected = false
         socket?.cancel(with: .goingAway, reason: nil)
         socket = nil
-        isConnected = false
+        session = nil
     }
 
     /// Send a log message to the debug server
@@ -89,14 +130,31 @@ public class DebugSocket: NSObject {
 
     private func doConnect() {
         guard socket == nil else { return }
+        shouldReconnect = true
 
-        let deviceHash = DeviceIdentification.deviceHash
-        let deviceName = UIDevice.current.name
-            .addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? "Unknown"
+        let deviceHash = Self.deviceHash
 
-        var urlString = "\(serverURL)?device=\(deviceHash)&name=\(deviceName)&secret=\(sharedSecret)"
+        // Use custom name from settings if set, otherwise fall back to device model
+        let customName = Self.deviceName
+        let deviceName: String
+        if !customName.isEmpty {
+            deviceName = customName
+                .addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? "Unknown"
+        } else {
+            // Fall back to device model + hash suffix
+            let suffix = String(deviceHash.suffix(4))
+            let model = Self.modelName
+            deviceName = "\(model) (\(suffix))"
+                .addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? "Unknown"
+        }
 
-        // Add tunnel IPs if available (hook into your TunnelManager)
+        // URL-encode the secret
+        let encodedSecret = sharedSecret
+            .addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? sharedSecret
+
+        var urlString = "\(serverURL)?device=\(deviceHash)&name=\(deviceName)&secret=\(encodedSecret)"
+
+        // Add tunnel IPs if available (override getCurrentIPv4/v6 for your app)
         if let ipv4 = getCurrentIPv4() {
             urlString += "&ipv4=\(ipv4)"
         }
@@ -109,28 +167,17 @@ public class DebugSocket: NSObject {
             return
         }
 
-        // Create session with optional certificate pinning
+        // Create session
         let config = URLSessionConfiguration.default
         config.timeoutIntervalForRequest = 30
         config.timeoutIntervalForResource = 300
-        
-        if pinnedCertificateBase64 != nil {
-            // Use delegate for certificate pinning
-            session = URLSession(configuration: config, delegate: self, delegateQueue: nil)
-        } else {
-            // Standard PKI validation
-            session = URLSession(configuration: config)
-        }
-        
+        session = URLSession(configuration: config)
+
         socket = session?.webSocketTask(with: url)
         socket?.resume()
         isConnected = true
-        shouldReconnect = true
 
         print("[DebugSocket] Connected to \(serverURL)")
-        if pinnedCertificateBase64 != nil {
-            print("[DebugSocket] Using pinned certificate")
-        }
 
         // Keep connection alive with ping
         schedulePing()
@@ -139,14 +186,14 @@ public class DebugSocket: NSObject {
 
     /// Override this to provide the current tunnel IPv4 address
     private func getCurrentIPv4() -> String? {
-        // TODO: Hook into your TunnelManager to get assigned IPv4
+        // Hook into your TunnelManager to get assigned IPv4
         // Example: return TunnelManager.shared.currentTunnel?.assignedIP
         return nil
     }
 
     /// Override this to provide the current tunnel IPv6 address
     private func getCurrentIPv6() -> String? {
-        // TODO: Hook into your TunnelManager to get assigned IPv6
+        // Hook into your TunnelManager to get assigned IPv6
         // Example: return TunnelManager.shared.currentTunnel?.assignedIPv6
         return nil
     }
@@ -169,7 +216,6 @@ public class DebugSocket: NSObject {
             guard let self = self else { return }
             switch result {
             case .success:
-                // Keep listening (server might send commands in future)
                 self.receiveLoop()
             case .failure:
                 self.handleDisconnect()
@@ -184,113 +230,176 @@ public class DebugSocket: NSObject {
 
         guard shouldReconnect else { return }
 
-        // Retry after 5 seconds
         print("[DebugSocket] Disconnected, reconnecting in 5s...")
         queue.asyncAfter(deadline: .now() + 5) { [weak self] in
             self?.doConnect()
         }
     }
-    
-    // MARK: - Certificate Pinning Helper
-    
-    private func loadPinnedCertificate() -> SecCertificate? {
-        guard let base64 = pinnedCertificateBase64,
-              let data = Data(base64Encoded: base64.replacingOccurrences(of: "\n", with: "")
-                                                    .replacingOccurrences(of: " ", with: "")) else {
-            return nil
+
+    // MARK: - Device Identification
+
+    /// MD5 hash of device's identifierForVendor for privacy
+    private static var deviceHash: String {
+        guard let vendorId = UIDevice.current.identifierForVendor?.uuidString else {
+            return md5Hash(UUID().uuidString)
         }
-        return SecCertificateCreateWithData(nil, data as CFData)
+        return md5Hash(vendorId)
     }
-}
 
-// MARK: - URLSessionDelegate for Certificate Pinning
+    private static func md5Hash(_ string: String) -> String {
+        let digest = Insecure.MD5.hash(data: Data(string.utf8))
+        return digest.map { String(format: "%02hhx", $0) }.joined()
+    }
 
-extension DebugSocket: URLSessionDelegate {
-    public func urlSession(_ session: URLSession,
-                          didReceive challenge: URLAuthenticationChallenge,
-                          completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
-        
-        guard challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
-              let serverTrust = challenge.protectionSpace.serverTrust else {
-            completionHandler(.cancelAuthenticationChallenge, nil)
-            return
+    /// Human-readable device model name (e.g. "iPhone 15 Pro Max")
+    private static var modelName: String {
+        var systemInfo = utsname()
+        uname(&systemInfo)
+        let machineMirror = Mirror(reflecting: systemInfo.machine)
+        let identifier = machineMirror.children.reduce("") { identifier, element in
+            guard let value = element.value as? Int8, value != 0 else { return identifier }
+            return identifier + String(UnicodeScalar(UInt8(value)))
         }
-        
-        // If no pinned certificate, use default validation
-        guard let pinnedCert = loadPinnedCertificate() else {
-            completionHandler(.performDefaultHandling, nil)
-            return
-        }
-        
-        // Get server certificate
-        let serverCertCount = SecTrustGetCertificateCount(serverTrust)
-        guard serverCertCount > 0 else {
-            print("[DebugSocket] No server certificate found")
-            completionHandler(.cancelAuthenticationChallenge, nil)
-            return
-        }
-        
-        // Compare certificates
-        if #available(iOS 15.0, *) {
-            // iOS 15+ uses SecTrustCopyCertificateChain
-            guard let certChain = SecTrustCopyCertificateChain(serverTrust) as? [SecCertificate],
-                  let serverCert = certChain.first else {
-                completionHandler(.cancelAuthenticationChallenge, nil)
-                return
-            }
-            
-            let serverCertData = SecCertificateCopyData(serverCert) as Data
-            let pinnedCertData = SecCertificateCopyData(pinnedCert) as Data
-            
-            if serverCertData == pinnedCertData {
-                print("[DebugSocket] Certificate pinning: MATCHED")
-                completionHandler(.useCredential, URLCredential(trust: serverTrust))
-            } else {
-                print("[DebugSocket] Certificate pinning: MISMATCH - rejecting connection")
-                completionHandler(.cancelAuthenticationChallenge, nil)
-            }
-        } else {
-            // iOS 14 and earlier (deprecated API)
-            guard let serverCert = SecTrustGetCertificateAtIndex(serverTrust, 0) else {
-                completionHandler(.cancelAuthenticationChallenge, nil)
-                return
-            }
-            
-            let serverCertData = SecCertificateCopyData(serverCert) as Data
-            let pinnedCertData = SecCertificateCopyData(pinnedCert) as Data
-            
-            if serverCertData == pinnedCertData {
-                print("[DebugSocket] Certificate pinning: MATCHED")
-                completionHandler(.useCredential, URLCredential(trust: serverTrust))
-            } else {
-                print("[DebugSocket] Certificate pinning: MISMATCH - rejecting connection")
-                completionHandler(.cancelAuthenticationChallenge, nil)
-            }
+        return mapToModelName(identifier)
+    }
+
+    private static func mapToModelName(_ identifier: String) -> String {
+        switch identifier {
+        // iPhone 17 series
+        case "iPhone18,1": return "iPhone 17"
+        case "iPhone18,2": return "iPhone 17 Pro Max"
+        case "iPhone18,3": return "iPhone 17 Pro"
+        case "iPhone18,4": return "iPhone 17 Air"
+        // iPhone 16 series
+        case "iPhone17,1": return "iPhone 16 Pro"
+        case "iPhone17,2": return "iPhone 16 Pro Max"
+        case "iPhone17,3": return "iPhone 16"
+        case "iPhone17,4": return "iPhone 16 Plus"
+        // iPhone 15 series
+        case "iPhone16,1": return "iPhone 15 Pro"
+        case "iPhone16,2": return "iPhone 15 Pro Max"
+        case "iPhone15,4": return "iPhone 15"
+        case "iPhone15,5": return "iPhone 15 Plus"
+        // iPhone 14 series
+        case "iPhone15,2": return "iPhone 14 Pro"
+        case "iPhone15,3": return "iPhone 14 Pro Max"
+        case "iPhone14,7": return "iPhone 14"
+        case "iPhone14,8": return "iPhone 14 Plus"
+        // iPhone 13 series
+        case "iPhone14,5": return "iPhone 13"
+        case "iPhone14,4": return "iPhone 13 mini"
+        case "iPhone14,2": return "iPhone 13 Pro"
+        case "iPhone14,3": return "iPhone 13 Pro Max"
+        // iPad Pro
+        case "iPad13,4", "iPad13,5", "iPad13,6", "iPad13,7": return "iPad Pro 11-inch (3rd gen)"
+        case "iPad13,8", "iPad13,9", "iPad13,10", "iPad13,11": return "iPad Pro 12.9-inch (5th gen)"
+        // Simulator
+        case "i386", "x86_64", "arm64": return "Simulator"
+        default: return identifier
         }
     }
 }
 
-// MARK: - Integration with existing Logger
+// MARK: - Integration Example
 
 /*
- Add this to your wg_log() function in Logger.swift:
+ ## Quick Integration Guide
 
- func wg_log(_ type: OSLogType, message msg: String) {
-     os_log("%{public}s", log: OSLog.default, type: type, msg)
-     guard Logger.isEnabled else { return }
-     Logger.global?.log(message: msg)
+ ### 1. Add to your project
 
-     // Stream to DebugSocket (add this line)
-     DebugSocket.shared.log(msg)
- }
+ Copy this file into your iOS project.
 
- And in your App.swift or AppDelegate:
+ ### 2. Configure
 
+ Update these values in DebugSocket.swift:
+ - serverURL: Your DebugSocket server URL
+ - sharedSecret: Must match --secret on server
+
+ ### 3. Initialize on app launch
+
+ In your App.swift or AppDelegate:
+
+ ```swift
  @main
  struct MyApp: App {
      init() {
+         // Auto-connect for TestFlight/Debug builds
          DebugSocket.shared.connectIfTestFlight()
+
+         // OR: Connect only if user enabled in settings
+         DebugSocket.shared.initializeIfEnabled()
      }
-     // ...
  }
-*/
+ ```
+
+ ### 4. Stream your logs
+
+ In your logging function:
+
+ ```swift
+ func log(_ message: String) {
+     print(message)
+     DebugSocket.shared.log(message)
+ }
+ ```
+
+ Or use the callback:
+
+ ```swift
+ // In app init
+ DebugSocket.logHandler = { msg in
+     DebugSocket.shared.log(msg)
+ }
+
+ // Then in your logger, call the handler
+ DebugSocket.logHandler?(message)
+ ```
+
+ ### 5. Add Settings UI (Optional)
+
+ ```swift
+ struct SettingsView: View {
+     @State private var debugEnabled = DebugSocket.isEnabled
+     @State private var deviceName = DebugSocket.deviceName
+
+     var body: some View {
+         Form {
+             Section("Developer") {
+                 Toggle("Debug Streaming", isOn: $debugEnabled)
+                     .onChange(of: debugEnabled) { DebugSocket.isEnabled = $0 }
+
+                 if debugEnabled {
+                     TextField("Device Name", text: $deviceName)
+                         .onSubmit { DebugSocket.deviceName = deviceName }
+                 }
+             }
+         }
+     }
+ }
+ ```
+
+ ### 6. Query logs from Cursor/terminal
+
+ ```bash
+ # List devices
+ curl "https://your-server/devices?secret=YOUR_SECRET"
+
+ # Get logs
+ curl "https://your-server/logs/DEVICE_HASH?secret=YOUR_SECRET&format=text"
+
+ # Filter by time
+ curl "https://your-server/logs/DEVICE_HASH?secret=YOUR_SECRET&since=5m&format=text"
+
+ # Filter by regex
+ curl "https://your-server/logs/DEVICE_HASH?secret=YOUR_SECRET&regex=Error&format=text"
+
+ # Live tail
+ websocat "wss://your-server/tail/DEVICE_HASH?secret=YOUR_SECRET"
+ ```
+
+ ## Important
+
+ - Remove or disable before App Store submission
+ - Logs are cleared on each device reconnection
+ - Device hash is derived from identifierForVendor (privacy-preserving)
+ */
