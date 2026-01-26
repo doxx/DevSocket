@@ -1,6 +1,14 @@
-# DebugSocket
+# DevSocket
+
+by Barrett Lyon @ doxx.net
 
 Stream console logs from iOS/Android devices over WebSocket.
+
+Created to enable Cursor AI assistance with mobile apps during development. Console messages from TestFlight builds are impossible to extract in real-time, making debugging a guessing game. This streams logs directly to your dev environment so you can see what's happening on device while working in Cursor.
+
+**NOT for production use.** This is a dev/beta debugging tool only. The purpose is to speed up development and reduce guesswork during mobile app debugging.
+
+MIT License
 
 ## Quick Start
 
