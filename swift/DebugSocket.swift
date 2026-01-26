@@ -307,7 +307,7 @@ public class DebugSocket: NSObject {
 
  ### 1. Add to your project
 
- Copy this file into your iOS project.
+ Copy DebugSocket.swift and DebugSocketSettingsView.swift into your iOS project.
 
  ### 2. Configure
 
@@ -355,28 +355,36 @@ public class DebugSocket: NSObject {
  DebugSocket.logHandler?(message)
  ```
 
- ### 5. Add Settings UI (Optional)
+ ### 5. Add Settings UI
+
+ Use the provided DebugSocketSettingsView for a complete settings page:
 
  ```swift
- struct SettingsView: View {
-     @State private var debugEnabled = DebugSocket.isEnabled
-     @State private var deviceName = DebugSocket.deviceName
-
-     var body: some View {
-         Form {
-             Section("Developer") {
-                 Toggle("Debug Streaming", isOn: $debugEnabled)
-                     .onChange(of: debugEnabled) { DebugSocket.isEnabled = $0 }
-
-                 if debugEnabled {
-                     TextField("Device Name", text: $deviceName)
-                         .onSubmit { DebugSocket.deviceName = deviceName }
-                 }
-             }
+ // In your navigation destinations
+ NavigationLink(destination: DebugSocketSettingsView()) {
+     HStack {
+         Image(systemName: "ant.fill")
+             .foregroundColor(.yellow)
+         VStack(alignment: .leading) {
+             Text("Developer Debug")
+             Text(DebugSocket.isEnabled ? "Enabled" : "Disabled")
+                 .font(.caption)
+                 .foregroundColor(.secondary)
          }
+         Spacer()
+         Image(systemName: "chevron.right")
+             .foregroundColor(.secondary)
      }
  }
  ```
+
+ The settings view includes:
+ - Enable/disable toggle
+ - Device name input for identification
+ - Connection status indicator
+ - Documentation and warnings
+
+ For dark-themed apps, use DebugSocketSettingsViewDark instead.
 
  ### 6. Query logs from Cursor/terminal
 

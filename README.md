@@ -74,20 +74,7 @@ func log(_ message: String) {
 }
 ```
 
-5. (Optional) Add settings toggle for user control:
-
-```swift
-Toggle("Debug Streaming", isOn: Binding(
-    get: { DebugSocket.isEnabled },
-    set: { DebugSocket.isEnabled = $0 }
-))
-
-// Custom device name for easy identification
-TextField("Device Name", text: Binding(
-    get: { DebugSocket.deviceName },
-    set: { DebugSocket.deviceName = $0 }
-))
-```
+5. (Optional) Add a settings page for user control. See `swift/DebugSocketSettingsView.swift` for a complete SwiftUI detail view with toggle, device name input, status indicator, and documentation.
 
 ### Android Client
 
