@@ -27,8 +27,8 @@ make build
     --bind-v4=0.0.0.0:443 \
     --bind-v6=[::]:443 \
     --tls \
-    --cert=/etc/certs/pki/2025-2026/doxx.net.crt \
-    --key=/etc/certs/pki/2025-2026/doxx.net.key
+    --cert=/path/to/your.crt \
+    --key=/path/to/your.key
 ```
 
 ### Command Line Flags
@@ -39,8 +39,8 @@ make build
 | `--bind-v4` | | IPv4 bind address, e.g. `0.0.0.0:8765` |
 | `--bind-v6` | | IPv6 bind address, e.g. `[::]:8765` |
 | `--tls` | false | Enable TLS |
-| `--cert` | `/etc/certs/pki/2025-2026/doxx.net.crt` | TLS certificate path |
-| `--key` | `/etc/certs/pki/2025-2026/doxx.net.key` | TLS private key path |
+| `--cert` | | TLS certificate path |
+| `--key` | | TLS private key path |
 
 At least one of `--bind-v4` or `--bind-v6` is required.
 
@@ -225,8 +225,8 @@ See [CURSOR_DEBUGGING.md](CURSOR_DEBUGGING.md) for usage examples.
     --bind-v4=0.0.0.0:443 \
     --bind-v6=[::]:443 \
     --tls \
-    --cert=/etc/certs/pki/2025-2026/doxx.net.crt \
-    --key=/etc/certs/pki/2025-2026/doxx.net.key
+    --cert=/path/to/your.crt \
+    --key=/path/to/your.key
 
 # IPv6 only
 ./bin/DebugSocket_linux_amd64 --secret=your-secret --bind-v6=[::]:8765
