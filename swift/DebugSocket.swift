@@ -17,6 +17,12 @@ public class DebugSocket: NSObject {
     private var isConnected = false
     private var shouldReconnect = true
 
+    // Cached formatter — ISO8601DateFormatter is expensive to create
+    private let dateFormatter: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        return f
+    }()
+
     // MARK: - Configuration (UPDATE THESE FOR YOUR PROJECT)
 
     /// Your DebugSocket server URL (wss:// for TLS, ws:// for local dev)
@@ -100,28 +106,40 @@ public class DebugSocket: NSObject {
 
     /// Stop streaming and disconnect
     public func disconnect() {
-        shouldReconnect = false
-        isConnected = false
-        socket?.cancel(with: .goingAway, reason: nil)
-        socket = nil
-        session = nil
+        queue.async { [weak self] in
+            guard let self = self else { return }
+            self.shouldReconnect = false
+            self.isConnected = false
+            self.socket?.cancel(with: .goingAway, reason: nil)
+            self.socket = nil
+            self.session = nil
+        }
     }
 
     /// Send a log message to the debug server
     public func log(_ message: String) {
-        guard isConnected, let socket = socket else { return }
+        queue.async { [weak self] in
+            self?.sendLog(message)
+        }
+    }
+
+    /// Actually send the log (must be called on queue)
+    private func sendLog(_ message: String) {
+        guard isConnected, let socket = socket, socket.state == .running else { return }
 
         let entry: [String: Any] = [
-            "ts": ISO8601DateFormatter().string(from: Date()),
+            "ts": dateFormatter.string(from: Date()),
             "msg": message
         ]
 
         guard let data = try? JSONSerialization.data(withJSONObject: entry),
               let json = String(data: data, encoding: .utf8) else { return }
 
-        socket.send(.string(json)) { error in
+        socket.send(.string(json)) { [weak self] error in
             if error != nil {
-                // Connection might be dead, will reconnect
+                self?.queue.async {
+                    self?.handleDisconnect()
+                }
             }
         }
     }
@@ -167,20 +185,19 @@ public class DebugSocket: NSObject {
             return
         }
 
-        // Create session
+        // Create session with delegate to get WebSocket lifecycle events
         let config = URLSessionConfiguration.default
         config.timeoutIntervalForRequest = 30
         config.timeoutIntervalForResource = 300
-        session = URLSession(configuration: config)
+        session = URLSession(configuration: config, delegate: self, delegateQueue: nil)
 
         socket = session?.webSocketTask(with: url)
         socket?.resume()
-        isConnected = true
 
-        print("[DebugSocket] Connected to \(serverURL)")
+        // Don't set isConnected = true here — wait for didOpenWithProtocol delegate
+        print("[DebugSocket] Connecting to \(serverURL)...")
 
-        // Keep connection alive with ping
-        schedulePing()
+        // Start receive loop (will wait for connection internally)
         receiveLoop()
     }
 
@@ -224,6 +241,7 @@ public class DebugSocket: NSObject {
     }
 
     private func handleDisconnect() {
+        guard isConnected || socket != nil else { return }
         isConnected = false
         socket?.cancel(with: .goingAway, reason: nil)
         socket = nil
@@ -234,6 +252,15 @@ public class DebugSocket: NSObject {
         queue.asyncAfter(deadline: .now() + 5) { [weak self] in
             self?.doConnect()
         }
+    }
+
+    /// Called when the WebSocket handshake completes — now safe to send
+    private func onConnectionEstablished() {
+        isConnected = true
+        print("[DebugSocket] Connected to \(serverURL)")
+
+        // Keep connection alive with ping
+        schedulePing()
     }
 
     // MARK: - Device Identification
@@ -296,6 +323,44 @@ public class DebugSocket: NSObject {
         // Simulator
         case "i386", "x86_64", "arm64": return "Simulator"
         default: return identifier
+        }
+    }
+}
+
+// MARK: - URLSessionWebSocketDelegate
+
+extension DebugSocket: URLSessionWebSocketDelegate {
+    public func urlSession(
+        _ session: URLSession,
+        webSocketTask: URLSessionWebSocketTask,
+        didOpenWithProtocol protocol: String?
+    ) {
+        queue.async { [weak self] in
+            self?.onConnectionEstablished()
+        }
+    }
+
+    public func urlSession(
+        _ session: URLSession,
+        webSocketTask: URLSessionWebSocketTask,
+        didCloseWith closeCode: URLSessionWebSocketTask.CloseCode,
+        reason: Data?
+    ) {
+        queue.async { [weak self] in
+            self?.handleDisconnect()
+        }
+    }
+
+    public func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        didCompleteWithError error: Error?
+    ) {
+        // Called when the task fails entirely (e.g., network down, TLS error)
+        if error != nil {
+            queue.async { [weak self] in
+                self?.handleDisconnect()
+            }
         }
     }
 }
